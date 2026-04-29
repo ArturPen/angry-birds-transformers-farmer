@@ -147,8 +147,8 @@ Launch the app.py and open **⚙ Settings**. Set your ADB address to match the p
 If your emulator resolution is not 1920×1080, adjust the **Claim Button X/Y coordinates** to match the pixel position of the Claim button on your screen or choose 1920x1080 resolution in BlueStacks 5 advanced settings. Click **💾 Save Settings** — everything is written to `config.json` and restored on the next launch.
 
 ### Step 4: Start farming
-
-Select your farming mode, enter the desired amount, and press **▶ START**.
+* Open the game on rooted emulator, log in to the game, open daily rewards menu
+* Select your farming mode, enter the desired amount, and press **▶ START**.
 
 ## Download ABTFarmer.exe
 ### Step 1: Download ABTFarmer.exe from [Releases](https://github.com/ArturPen/ab-transformers-time-skip/releases)
@@ -159,8 +159,8 @@ Launch the ABTFarmer.exe and open **⚙ Settings**. Set your ADB address to matc
 If your emulator resolution is not 1920×1080, adjust the **Claim Button X/Y coordinates** to match the pixel position of the Claim button on your screen or choose 1920x1080 resolution in BlueStacks 5 advanced settings. Click **💾 Save Settings** — everything is written to `config.json` and restored on the next launch..
 
 ### Step 3: Start farming
-
-Select your farming mode, enter the desired amount, and press **▶ START**.
+* Open the game on rooted emulator, log in to the game, open daily rewards menu
+* Select your farming mode, enter the desired amount, and press **▶ START**.
 
 ---
 
