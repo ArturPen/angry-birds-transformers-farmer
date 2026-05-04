@@ -9,6 +9,8 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      FINAL_EXE_NAME: ABTFarmer_${{ github.ref_name }}
 
     steps:
       - name: Checkout repository
@@ -33,7 +35,7 @@ jobs:
 
       - name: Build exe
         run: |
-          pyinstaller --onefile --windowed --name ABTFarmer `
+          pyinstaller --onefile --windowed --name "${{ env.FINAL_EXE_NAME }}" `
             --add-binary "adb.exe;." `
             --add-binary "AdbWinApi.dll;." `
             --add-binary "AdbWinUsbApi.dll;." `
@@ -42,13 +44,13 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ABTFarmer
-          path: dist/ABTFarmer.exe
+          name: ${{ env.FINAL_EXE_NAME }}
+          path: dist/${{ env.FINAL_EXE_NAME }}.exe
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/ABTFarmer.exe
+          files: dist/${{ env.FINAL_EXE_NAME }}.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
