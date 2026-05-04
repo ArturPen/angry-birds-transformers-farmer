@@ -1,0 +1,54 @@
+name: Build ABTFarmer.exe
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Download ADB
+        shell: powershell
+        run: |
+          Invoke-WebRequest -Uri "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile "platform-tools.zip"
+          Expand-Archive -Path "platform-tools.zip" -DestinationPath "."
+          Copy-Item "platform-tools\adb.exe" -Destination "."
+          Copy-Item "platform-tools\AdbWinApi.dll" -Destination "."
+          Copy-Item "platform-tools\AdbWinUsbApi.dll" -Destination "."
+
+      - name: Build exe
+        run: |
+          pyinstaller --onefile --windowed --name ABTFarmer `
+            --add-binary "adb.exe;." `
+            --add-binary "AdbWinApi.dll;." `
+            --add-binary "AdbWinUsbApi.dll;." `
+            app.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ABTFarmer
+          path: dist/ABTFarmer.exe
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ABTFarmer.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
