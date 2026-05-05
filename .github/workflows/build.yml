@@ -37,6 +37,7 @@ jobs:
         run: |
           pyinstaller --onefile --windowed --name "${{ env.FINAL_EXE_NAME }}" `
             --icon="assets/ABTFarmer.ico" `
+            --add-data "assets;assets" `
             --add-binary "adb.exe;." `
             --add-binary "AdbWinApi.dll;." `
             --add-binary "AdbWinUsbApi.dll;." `
