@@ -33,14 +33,13 @@ jobs:
           Copy-Item "platform-tools\AdbWinApi.dll" -Destination "."
           Copy-Item "platform-tools\AdbWinUsbApi.dll" -Destination "."
 
-      - name: Rename output exe in spec
-        shell: powershell
-        run: |
-          (Get-Content ABTFarmer.spec) -replace "name='ABTFarmer'", "name='${{ env.FINAL_EXE_NAME }}'" |
-          Set-Content ABTFarmer.spec
-
       - name: Build exe
-        run: pyinstaller ABTFarmer.spec --noconfirm
+        run: |
+          pyinstaller --onefile --windowed --name "${{ env.FINAL_EXE_NAME }}" `
+            --add-binary "adb.exe;." `
+            --add-binary "AdbWinApi.dll;." `
+            --add-binary "AdbWinUsbApi.dll;." `
+            app.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
