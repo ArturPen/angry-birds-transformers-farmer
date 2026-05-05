@@ -11,7 +11,6 @@ import logging
 import logging.handlers
 import webbrowser
 from datetime import datetime
-
 from driver import GameDriver, validate_adb_address, validate_coords, setup_rotating_log
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -21,7 +20,7 @@ APP_VERSION = "2.2.1"
 APP_TITLE   = f"ArturPen's ABT Farmer  v{APP_VERSION}"
 CONFIG_FILE = "config.json"
 LOG_FILE    = "farm_log.txt"
-GITHUB_URL  = "https://github.com/ArturPen/ab-transformers-time-skip"
+GITHUB_URL  = "https://github.com/ArturPen/angry-birds-transformers-farmer"
 
 DEFAULT_CONFIG = {
     "adb_address":   "127.0.0.1:5575",
@@ -60,6 +59,13 @@ F_SMALL  = ("Segoe UI", 8)
 F_MONO   = ("Consolas", 9)
 F_LABEL  = ("Segoe UI", 9)
 
+def get_resource_path(relative_path):
+    try:
+        # PyInstaller creates _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Config helpers
@@ -413,6 +419,14 @@ class ABTFarmerApp(tk.Tk):
         self.resizable(True, True)
         self.minsize(540, 660)
         self.configure(bg=BG)
+
+        # Icon setup
+        icon_path = get_resource_path("assets/ABTFarmer.ico")
+        if os.path.exists(icon_path):
+            try:
+                self.iconbitmap(icon_path)
+            except Exception:
+                pass
 
         w, h = 580, 800
         self.update_idletasks()
