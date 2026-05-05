@@ -12,7 +12,10 @@ import logging.handlers
 import webbrowser
 from datetime import datetime
 from driver import GameDriver, validate_adb_address, validate_coords, setup_rotating_log
+import ctypes
 
+myappid = 'arturpen.abtfarmer' 
+ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
