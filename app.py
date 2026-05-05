@@ -428,6 +428,22 @@ class ABTFarmerApp(tk.Tk):
         if os.path.exists(icon_path):
             try:
                 self.iconbitmap(icon_path)
+
+                try:
+                    from PIL import Image, ImageTk
+                    # Loading ICO from Pillow
+                    pil_image = Image.open(icon_path)
+
+                    tk_icon_image = ImageTk.PhotoImage(pil_image)
+                    self.iconphoto(True, tk_icon_image)
+
+                    self._taskbar_icon_ref = tk_icon_image 
+                except ImportError:
+                    
+                    tk_icon_image = tk.PhotoImage(file=icon_path)
+                    self.iconphoto(True, tk_icon_image)
+                    self._taskbar_icon_ref = tk_icon_image
+
             except Exception:
                 pass
 
