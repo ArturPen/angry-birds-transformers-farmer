@@ -16,7 +16,7 @@ from driver import GameDriver, validate_adb_address, validate_coords, setup_rota
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.2.2"
 APP_TITLE   = f"ArturPen's ABT Farmer  v{APP_VERSION}"
 CONFIG_FILE = "config.json"
 LOG_FILE    = "farm_log.txt"
