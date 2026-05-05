@@ -4,6 +4,7 @@ import re
 import logging
 import sys
 import os
+import subprocess
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 
@@ -182,6 +183,7 @@ class GameDriver:
                 shell=False,        # <- key fix #1
                 capture_output=True,
                 text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
             )
             return result.stdout.strip()
         except FileNotFoundError:
@@ -205,6 +207,7 @@ class GameDriver:
                 [self._adb, "connect", self.adb_address],
                 shell=False,
                 capture_output=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
             )
         except Exception as exc:
             logging.error(f"[ADB] Connect error: {exc}")
