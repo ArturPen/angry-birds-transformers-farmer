@@ -8,15 +8,16 @@ import sys
 import math
 import time
 import logging
+import logging.handlers
 import webbrowser
 from datetime import datetime
 
-from driver import GameDriver
+from driver import GameDriver, validate_adb_address, validate_coords, setup_rotating_log
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
-APP_VERSION = "2.1.2"
+APP_VERSION = "2.2.0"
 APP_TITLE   = f"ArturPen's ABT Farmer  v{APP_VERSION}"
 CONFIG_FILE = "config.json"
 LOG_FILE    = "farm_log.txt"
@@ -68,8 +69,12 @@ def load_config() -> dict:
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 return {**DEFAULT_CONFIG, **json.load(f)}
-        except Exception:
-            pass
+        # FIX #4 (app): specific exceptions instead of a bare pass so the user
+        # knows the config could not be read rather than silently getting defaults.
+        except json.JSONDecodeError as e:
+            logging.warning(f"[CONFIG] config.json is malformed, using defaults: {e}")
+        except Exception as e:
+            logging.warning(f"[CONFIG] Could not read config.json: {e}")
     return DEFAULT_CONFIG.copy()
 
 
@@ -79,7 +84,7 @@ def save_config(cfg: dict):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Queue-based logging handler (farming thread → GUI)
+# Queue-based logging handler (farming thread -> GUI)
 # ─────────────────────────────────────────────────────────────────────────────
 class QueueHandler(logging.Handler):
     def __init__(self, log_queue: queue.Queue):
@@ -98,20 +103,37 @@ def farming_worker(mode: int, amount: int, cfg: dict,
                    log_q: queue.Queue,
                    ctrl_q: queue.Queue):
     """
-    mode 1 = Farm Gems   (2-day skip, 5 gems/cycle)
-    mode 2 = Farm Resources (1-day skip, sequential rewards, min 15)
+    mode 1 = Farm Gems   (2-day skip, 5 gems/cycle, min 25 gems)
+    mode 2 = Farm Resources (1-day skip, sequential rewards, min 15 days)
 
     ctrl_q messages:
-        "STOP_UNLOCKED"  – mode 2 only: cycle 14 done, stop is now safe
-        "DONE"           – farming finished normally
-        "STOPPED"        – farming stopped via stop command (fix executed)
-        "ERROR:<msg>"    – fatal error
+        "STOP_UNLOCKED"  - stop is now safe to trigger
+        "DONE"           - farming finished normally
+        "STOPPED"        - farming stopped via stop command (fix executed)
+        "ERROR:<msg>"    - fatal error, farming aborted
     """
+    # FIX #5 (app): wrap the entire worker in a top-level try/except so that
+    # any unhandled exception in the thread sends an ERROR signal to ctrl_q,
+    # restoring the UI instead of leaving it stuck in the "farming" state forever.
+    try:
+        _farming_worker_inner(mode, amount, cfg, stop_event, log_q, ctrl_q)
+    except Exception as e:
+        logging.exception("[FATAL] Unhandled exception in farming thread")
+        ctrl_q.put(f"ERROR:Unexpected error: {e}")
+
+
+def _farming_worker_inner(mode: int, amount: int, cfg: dict,
+                          stop_event: threading.Event,
+                          log_q: queue.Queue,
+                          ctrl_q: queue.Queue):
 
     # ── Setup logging ──────────────────────────────────────────────────────
     # Two channels:
-    #   logger      → log_q (Activity Log in GUI)  — key events only
-    #   file_logger → farm_log.txt (Extended Log)  — full verbose output
+    #   logger      -> log_q  (Activity Log in the GUI)   - key events only
+    #   file_logger -> farm_log.txt (Extended Log)        - full verbose output
+    #
+    # FIX (logging): log() now writes to BOTH channels so that everything
+    # visible to the user in the GUI is also present in the text log file.
     logger = logging.getLogger("activity")
     logger.setLevel(logging.INFO)
     logger.handlers.clear()
@@ -128,28 +150,36 @@ def farming_worker(mode: int, amount: int, cfg: dict,
     q_handler.setFormatter(fmt)
     logger.addHandler(q_handler)
 
-    # File handler — verbose only
+    # FIX #8: attach a RotatingFileHandler via setup_rotating_log() so the
+    # log file is automatically rotated instead of growing without limit.
+    setup_rotating_log(LOG_FILE)
     try:
-        fh = logging.FileHandler(LOG_FILE, mode="w", encoding="utf-8")
+        fh = logging.handlers.RotatingFileHandler(
+            LOG_FILE,
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        )
         fh.setFormatter(fmt)
         file_logger.addHandler(fh)
     except Exception:
         pass
 
-    def log(msg):
-        """Key event — goes to Activity Log (GUI) only."""
-        logger.info(msg)
-
-    def vlog(msg):
-        """Verbose detail — goes to farm_log.txt (Extended Log) only."""
-        file_logger.info(msg)
-
-    def logall(msg):
-        """Important event — goes to both channels."""
+    def log(msg: str):
+        """Key event -> Activity Log (GUI) AND farm_log.txt."""
         logger.info(msg)
         file_logger.info(msg)
 
-    # Bridge: driver uses logging.getLogger() (root), route it to our file_logger
+    def vlog(msg: str):
+        """Verbose technical detail -> farm_log.txt only."""
+        file_logger.info(msg)
+
+    def logall(msg: str):
+        """Important event -> both channels (kept for compatibility)."""
+        logger.info(msg)
+        file_logger.info(msg)
+
+    # Bridge: driver uses the root logger — redirect its output to file_logger.
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
     root_logger.handlers.clear()
@@ -168,13 +198,18 @@ def farming_worker(mode: int, amount: int, cfg: dict,
             package_name=cfg["package_name"],
             activity_name=cfg["activity_name"],
         )
+    # FIX #2 (app): ValueError is now raised by validate_adb_address() in
+    # GameDriver.__init__ — catch it here and report a clean error to the UI.
+    except ValueError as e:
+        ctrl_q.put(f"ERROR:{e}")
+        return
     except Exception as e:
         ctrl_q.put(f"ERROR:Failed to create driver: {e}")
         return
 
     log(f"[INFO] Connecting to {cfg['adb_address']}...")
     if not driver.connect():
-        ctrl_q.put("ERROR:Could not connect to emulator. Check ADB settings.")
+        ctrl_q.put("ERROR:Could not connect to the emulator. Check ADB settings.")
         return
     log("[INFO] Connection established.")
 
@@ -183,10 +218,10 @@ def farming_worker(mode: int, amount: int, cfg: dict,
 
     # ── Calculate loops ────────────────────────────────────────────────────
     if mode == 1:
-        loops = math.ceil(amount / 5)
+        loops     = math.ceil(amount / 5)
         mode_name = "Farm Gems (+2 day skip)"
     else:
-        loops = amount
+        loops     = amount
         mode_name = "Farm Resources (+1 day skip)"
 
     total_sec = loops * 8
@@ -204,14 +239,12 @@ def farming_worker(mode: int, amount: int, cfg: dict,
 
     if mode == 1:
         log("[INFO] Stop button unlocks after cycle 5.")
-        vlog("[INFO] Stop button unlocks after cycle 5.")
     else:
         log("[INFO] Stop button unlocks after cycle 14.")
-        vlog("[INFO] Stop button unlocks after cycle 14.")
 
     # ── Helper: interruptible sleep ────────────────────────────────────────
     def isleep(seconds: int) -> bool:
-        """Returns True if stop was requested during sleep."""
+        """Sleeps in 1-second intervals. Returns True if stop was requested."""
         for _ in range(seconds):
             if stop_event.is_set():
                 return True
@@ -224,7 +257,7 @@ def farming_worker(mode: int, amount: int, cfg: dict,
     for i in range(loops):
         cycle = i + 1
 
-        # Stop-flag check
+        # Stop-flag check (only active after the minimum safe cycle count)
         if mode == 1 and i >= 5 and stop_event.is_set():
             stopped_early = True
             break
@@ -232,16 +265,22 @@ def farming_worker(mode: int, amount: int, cfg: dict,
             stopped_early = True
             break
 
-        # Activity Log: compact cycle line
         log(f"── Cycle {cycle}/{loops}")
-        # Extended Log: full separator
         vlog(f"── Cycle {cycle}/{loops} ──────────────────────────")
 
         # Step 1: time skip
-        if mode == 1:
-            driver.skip_days(2)
-        else:
-            driver.skip_days(1)
+        # FIX #1 (app): skip_days() can now raise RuntimeError (driver fix #4).
+        # Catch it here and abort with a clean error message instead of
+        # letting the thread crash silently.
+        try:
+            if mode == 1:
+                driver.skip_days(2)
+            else:
+                driver.skip_days(1)
+        except RuntimeError as e:
+            logall(f"[ERROR] Failed to read device time: {e}")
+            ctrl_q.put(f"ERROR:{e}")
+            return
 
         # Step 2: wait for game engine
         interrupted = isleep(5) if (mode == 1 and i >= 5) or (mode == 2 and i >= 14) else not not time.sleep(5)
@@ -249,7 +288,7 @@ def farming_worker(mode: int, amount: int, cfg: dict,
             stopped_early = True
             break
 
-        # Step 2b: freeze check
+        # Step 2b: freeze / crash check
         if not driver.is_game_foreground():
             logall("[ERROR] Game freeze detected — activity is no longer in foreground.")
             logall("[ERROR] The game may have crashed or an ANR dialog appeared.")
@@ -258,7 +297,14 @@ def farming_worker(mode: int, amount: int, cfg: dict,
             return
 
         # Step 3: tap claim button
-        driver.click(BTN_X, BTN_Y)
+        # FIX #9 (app): click() can raise ValueError if coordinates are out of
+        # range (driver fix #9). Catch and surface it cleanly.
+        try:
+            driver.click(BTN_X, BTN_Y)
+        except ValueError as e:
+            logall(f"[ERROR] Invalid claim button coordinates: {e}")
+            ctrl_q.put(f"ERROR:{e}")
+            return
 
         # Step 4: animation grace period
         interrupted = isleep(2) if (mode == 1 and i >= 5) or (mode == 2 and i >= 14) else not not time.sleep(2)
@@ -266,7 +312,7 @@ def farming_worker(mode: int, amount: int, cfg: dict,
             stopped_early = True
             break
 
-        # Step 4b: freeze check
+        # Step 4b: freeze / crash check
         if not driver.is_game_foreground():
             logall("[ERROR] Game freeze detected — activity is no longer in foreground.")
             logall("[ERROR] The game may have crashed or an ANR dialog appeared.")
@@ -274,17 +320,14 @@ def farming_worker(mode: int, amount: int, cfg: dict,
             ctrl_q.put("ERROR:Game froze or crashed during cycle. Check the emulator screen.")
             return
 
-        # After cycle 5 in mode 1: unlock stop
+        # Unlock stop after the minimum number of safe cycles
         if mode == 1 and cycle == 5:
             ctrl_q.put("STOP_UNLOCKED")
             log("[INFO] Cycle 5 complete — Stop is now active.")
-            vlog("[INFO] Cycle 5 complete — Stop button is now active.")
 
-        # After cycle 14 in mode 2: unlock stop
         if mode == 2 and cycle == 14:
             ctrl_q.put("STOP_UNLOCKED")
             log("[INFO] Cycle 14 complete — Stop is now active.")
-            vlog("[INFO] Cycle 14 complete — Stop button is now active.")
 
     # ── Finalization ───────────────────────────────────────────────────────
     def run_fix():
@@ -302,8 +345,7 @@ def farming_worker(mode: int, amount: int, cfg: dict,
         logall("[STOP] Stop received. Executing Time Fix before exit...")
         run_fix()
         logall("[STOP] Fix complete. Wait for 00:00 on the map screen.")
-        vlog("=" * 48)
-        log("=" * 48)
+        logall("=" * 48)
         ctrl_q.put("STOPPED")
         return
 
@@ -352,15 +394,15 @@ class ABTFarmerApp(tk.Tk):
         self.stop_event = threading.Event()
         self.farming    = False
         self.mode_var   = tk.IntVar(value=1)  # 1 = Gems, 2 = Resources
-        self._stop_btn_active = False          # tracks live stop state in mode 2
+        self._stop_btn_active = False          # tracks live stop state
 
         self._setup_window()
         self._build_main_frame()
         self._build_settings_frame()
         self._build_donate_frame()
         self._build_extlog_frame()
-        self._extlog_after = None
-        self._extlog_pos   = 0
+        self._extlog_after    = None
+        self._extlog_pos      = 0
         self._countdown_after = None
         self._countdown_end   = 0
         self._show_frame(self.main_frame)
@@ -380,7 +422,8 @@ class ABTFarmerApp(tk.Tk):
 
     # ── Frame switcher ────────────────────────────────────────────────────────
     def _show_frame(self, frame: tk.Frame):
-        for f in (self.main_frame, self.settings_frame, self.donate_frame, self.extlog_frame):
+        for f in (self.main_frame, self.settings_frame,
+                  self.donate_frame, self.extlog_frame):
             f.place_forget()
         if frame is self.extlog_frame:
             self._start_extlog_tail()
@@ -486,7 +529,7 @@ class ABTFarmerApp(tk.Tk):
         )
         self.action_btn.pack(fill="x")
 
-        # Mode-2 hint shown under stop button
+        # Mode-2 hint shown under the stop button
         self.stop_hint = tk.Label(
             btn_container, text="",
             font=F_SMALL, bg=BG, fg=SUBTEXT)
@@ -537,7 +580,6 @@ class ABTFarmerApp(tk.Tk):
         self.log_text.pack(fill="both", expand=True, padx=(4, 0), pady=(0, 4))
         scrollbar.config(command=self.log_text.yview)
 
-        # Log text color tags
         self.log_text.tag_config("info",    foreground=LOG_FG)
         self.log_text.tag_config("success", foreground=SUCCESS)
         self.log_text.tag_config("warning", foreground=WARNING)
@@ -623,7 +665,7 @@ class ABTFarmerApp(tk.Tk):
                  font=F_BOLD, bg=BG, fg=TEXT
                  ).pack(anchor="w", pady=(14, 2))
         tk.Label(inner,
-            text="Default X=720, Y=890 for 1920×1080. Change if using a different resolution.",
+            text="Default X=720, Y=890 for 1920x1080. Change if using a different resolution.",
             font=F_SMALL, bg=BG, fg=SUBTEXT, wraplength=460, justify="left"
             ).pack(anchor="w")
 
@@ -676,17 +718,35 @@ class ABTFarmerApp(tk.Tk):
         e.pack(fill="x", ipady=7, ipadx=8, pady=(4, 0))
 
     def _save_settings(self):
+        new_cfg = {}
         for key, var in self._settings_vars.items():
             val = var.get().strip()
             if key in ("btn_x", "btn_y"):
                 try:
-                    self.config_data[key] = int(val)
+                    new_cfg[key] = int(val)
                 except ValueError:
                     self.settings_saved_label.config(
                         text=f"⚠ {key} must be an integer.", fg=WARNING)
                     return
             else:
-                self.config_data[key] = val
+                new_cfg[key] = val
+
+        # FIX #3 (app): validate the ADB address before writing to config.json
+        # so a malformed address cannot break the next program launch.
+        try:
+            validate_adb_address(new_cfg["adb_address"])
+        except ValueError as e:
+            self.settings_saved_label.config(text=f"⚠  {e}", fg=WARNING)
+            return
+
+        # FIX #9 (app): validate coordinates before saving.
+        try:
+            validate_coords(int(new_cfg["btn_x"]), int(new_cfg["btn_y"]))
+        except ValueError as e:
+            self.settings_saved_label.config(text=f"⚠  {e}", fg=WARNING)
+            return
+
+        self.config_data.update(new_cfg)
         save_config(self.config_data)
         self.settings_saved_label.config(text="✓ Settings saved.", fg=SUCCESS)
         self.after(2000, lambda: self.settings_saved_label.config(text=""))
@@ -914,7 +974,6 @@ class ABTFarmerApp(tk.Tk):
     # Navigation
     # ─────────────────────────────────────────────────────────────────────────
     def _open_settings(self):
-        # Sync current config values into settings vars
         for key, var in self._settings_vars.items():
             var.set(str(self.config_data.get(key, "")))
         self.settings_saved_label.config(text="")
@@ -932,7 +991,6 @@ class ABTFarmerApp(tk.Tk):
 
         mode = self.mode_var.get()
 
-        # Validate input
         try:
             amount = int(self.amount_entry.get().strip())
         except ValueError:
@@ -940,9 +998,10 @@ class ABTFarmerApp(tk.Tk):
             return
 
         if mode == 1 and amount < 25:
-            self.val_label.config(text="⚠  Gems mode requires at least 25 gems.\n"
-                                       "   The Time Fix needs a minimum of 5 skips to work correctly.",
-                                  fg=WARNING)
+            self.val_label.config(
+                text="⚠  Gems mode requires at least 25 gems.\n"
+                     "   The Time Fix needs a minimum of 5 skips to work correctly.",
+                fg=WARNING)
             return
 
         if mode == 2 and amount < 15:
@@ -952,20 +1011,32 @@ class ABTFarmerApp(tk.Tk):
                 fg=WARNING)
             return
 
+        # FIX #2 (app): validate coordinates before starting the thread so
+        # a clear error is shown in the GUI rather than failing inside the worker.
+        try:
+            validate_coords(
+                int(self.config_data["btn_x"]),
+                int(self.config_data["btn_y"]),
+            )
+        except (ValueError, KeyError) as e:
+            self.val_label.config(
+                text=f"⚠  Invalid claim button coordinates: {e}\n"
+                     "   Please fix them in Settings.",
+                fg=WARNING)
+            return
+
         self.val_label.config(text="")
         self._start_farming(mode, amount)
 
     def _start_farming(self, mode: int, amount: int):
         self.farming = True
         self.stop_event.clear()
-        self._stop_btn_active = False  # both modes start dimmed
+        self._stop_btn_active = False
 
-        # Clear log
         self.log_text.config(state="normal")
         self.log_text.delete("1.0", "end")
         self.log_text.config(state="disabled")
 
-        # Switch to STOP button
         self.action_btn.config(
             text="⏹  STOP",
             command=self._on_stop,
@@ -979,12 +1050,10 @@ class ABTFarmerApp(tk.Tk):
             self.stop_hint.config(
                 text="Stop will unlock after cycle 5", fg=SUBTEXT)
 
-        # Disable mode/input controls
         self.rb_gems.config(state="disabled")
         self.rb_res.config(state="disabled")
         self.amount_entry.config(state="disabled")
 
-        # Start farming thread
         t = threading.Thread(
             target=farming_worker,
             args=(mode, amount, dict(self.config_data),
@@ -992,11 +1061,11 @@ class ABTFarmerApp(tk.Tk):
             daemon=True,
         )
         t.start()
-        self._total_cycles = math.ceil(amount / 5) if mode == 1 else amount
+
+        self._total_cycles  = math.ceil(amount / 5) if mode == 1 else amount
         self._done_cycles   = 0
         self._current_mode  = mode
-        # Start countdown
-        total_sec = self._total_cycles * 8
+        total_sec           = self._total_cycles * 8
         self._countdown_end = time.time() + total_sec
         self._tick_countdown()
         self._poll_queues()
@@ -1024,11 +1093,10 @@ class ABTFarmerApp(tk.Tk):
             )
 
     def _on_farming_ended(self):
-        """Reset UI after farming finishes (normal or stopped)."""
+        """Resets the UI after farming finishes (normally or via stop)."""
         self.farming = False
         self._stop_btn_active = False
 
-        # Stop countdown
         if self._countdown_after is not None:
             self.after_cancel(self._countdown_after)
             self._countdown_after = None
@@ -1048,7 +1116,7 @@ class ABTFarmerApp(tk.Tk):
         self.amount_entry.config(state="normal")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Countdown timer — updates every second while farming
+    # Countdown timer
     # ─────────────────────────────────────────────────────────────────────────
     def _tick_countdown(self):
         if not self.farming:
@@ -1066,10 +1134,10 @@ class ABTFarmerApp(tk.Tk):
         self._countdown_after = self.after(1000, self._tick_countdown)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Queue polling — runs on main thread every 80ms while farming
+    # Queue polling
     # ─────────────────────────────────────────────────────────────────────────
     def _poll_queues(self):
-        # Drain log queue
+        # Drain the log queue
         try:
             while True:
                 msg = self.log_q.get_nowait()
@@ -1077,7 +1145,7 @@ class ABTFarmerApp(tk.Tk):
         except queue.Empty:
             pass
 
-        # Drain control queue
+        # Drain the control queue
         try:
             while True:
                 cmd = self.ctrl_q.get_nowait()
@@ -1088,7 +1156,7 @@ class ABTFarmerApp(tk.Tk):
                         text="Stop is now active", fg=SUCCESS)
                 elif cmd in ("DONE", "STOPPED"):
                     self._on_farming_ended()
-                    return   # stop polling
+                    return
                 elif cmd.startswith("ERROR:"):
                     self._append_log(f"[ERROR] {cmd[6:]}", tag="error")
                     self._on_farming_ended()
@@ -1125,8 +1193,6 @@ class ABTFarmerApp(tk.Tk):
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Fix blurry/compressed text on Windows high-DPI displays.
-    # Must be called BEFORE the Tk window is created.
     try:
         import ctypes
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
