@@ -36,6 +36,7 @@ jobs:
       - name: Build exe
         run: |
           pyinstaller --onefile --windowed --name "${{ env.FINAL_EXE_NAME }}" `
+            --icon="ABTFarmer.ico" `
             --add-binary "adb.exe;." `
             --add-binary "AdbWinApi.dll;." `
             --add-binary "AdbWinUsbApi.dll;." `
