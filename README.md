@@ -16,7 +16,7 @@ A fully automated Python tool for the **Ultimate Time-Skip Glitch** in Angry Bir
 
 ## ⚠️ Disclaimer
 
-Use at your own risk. This exploit manipulates core game mechanics. While the script includes the Time Fix to prevent timer soft-locks, excessive use may result in leaderboard bans or account flags by Exient/Rovio. Always backup your game progress before using automation tools. Educational purposes only.
+Use at your own risk. This exploit manipulates game mechanics. While the script includes the Time Fix to prevent timer soft-locks, excessive use may result in leaderboard bans or account flags by Exient/Rovio. Always backup your game progress before using automation tools. Educational purposes only.
 
 ---
 
