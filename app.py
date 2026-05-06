@@ -11,7 +11,9 @@ import logging
 import logging.handlers
 import webbrowser
 from datetime import datetime
-from driver import GameDriver, validate_adb_address, validate_coords, setup_rotating_log
+from driver import (GameDriver, validate_adb_address, validate_coords,
+                    validate_package_name, validate_activity_name,
+                    setup_rotating_log)
 import ctypes
 
 myappid = 'arturpen.abtfarmer' 
@@ -19,7 +21,7 @@ ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
-APP_VERSION = "2.2.2"
+APP_VERSION = "2.2.3"
 APP_TITLE   = f"ArturPen's ABT Farmer  v{APP_VERSION}"
 CONFIG_FILE = "config.json"
 LOG_FILE    = "farm_log.txt"
@@ -207,7 +209,8 @@ def _farming_worker_inner(mode: int, amount: int, cfg: dict,
             package_name=cfg["package_name"],
             activity_name=cfg["activity_name"],
         )
-    # FIX #2 (app): ValueError is now raised by validate_adb_address() in
+    # FIX #2 (app): ValueError is now raised by validate_adb_address(),
+    # validate_package_name(), and validate_activity_name() in
     # GameDriver.__init__ — catch it here and report a clean error to the UI.
     except ValueError as e:
         ctrl_q.put(f"ERROR:{e}")
@@ -221,6 +224,53 @@ def _farming_worker_inner(mode: int, amount: int, cfg: dict,
         ctrl_q.put("ERROR:Could not connect to the emulator. Check ADB settings.")
         return
     log("[INFO] Connection established.")
+
+    # ── Pre-flight: verify the game is actually running with the configured
+    #    package name before touching time or clicking anything.
+    #
+    #    This catches the most common silent failure: the user saved a wrong
+    #    package_name in Settings, so is_game_foreground() would always return
+    #    False, causing every cycle to be flagged as a crash immediately.
+    #    We surface that as a clear, actionable error instead.
+
+    # ── (Pre-flight) ────────────────────────────────────────
+    log("[INFO] Verifying package and activity settings...")
+
+    # 1. Package check — is the app actually installed on the emulator?
+    if not driver.verify_package_installed():
+        logall(f"[ERROR] Package '{cfg['package_name']}' is NOT installed on the emulator.")
+        logall("[ERROR] Please check Settings → Package Name.")
+        logall("[ERROR] Make sure the game is installed in BlueStacks.")
+        ctrl_q.put(f"ERROR:Package '{cfg['package_name']}' not found on emulator. Check Settings → Package Name.")
+        return
+
+    log("[INFO] Package found. Verifying activity...")
+
+    # 2. Activity check — does the configured activity exist inside the package?
+    if not driver.verify_activity_exists():
+        logall(f"[ERROR] Activity '{cfg['activity_name']}' not found in package '{cfg['package_name']}'.")
+        logall("[ERROR] Please check Settings → Activity Name.")
+        ctrl_q.put(f"ERROR:Activity '{cfg['activity_name']}' not found in package. Check Settings → Activity Name.")
+        return
+
+    log("[INFO] Package and activity verified OK.")
+
+    # ───────────────────────────────────────────────────────────────────────
+    log("[INFO] Checking game is in foreground with current package name...")
+    if not driver.is_game_foreground():
+        logall("[ERROR] Game not detected in foreground.")
+        logall(f"[ERROR] Package name used: '{cfg['package_name']}'")
+        logall("[ERROR] Possible reasons:")
+        logall("[ERROR]   • Wrong Package Name or Activity Name in Settings")
+        logall("[ERROR]   • Game is not open / minimized in the emulator")
+        logall("[ERROR] Fix: open the game, navigate to Daily Rewards,")
+        logall("[ERROR]      then verify Package Name in Settings and try again.")
+        ctrl_q.put(
+            "ERROR:Game not found in foreground. Wrong package name in Settings, "
+            "or the game is not open. See Activity Log for details."
+        )
+        return
+    log("[INFO] Game detected in foreground. Starting farm...")
 
     BTN_X = int(cfg["btn_x"])
     BTN_Y = int(cfg["btn_y"])
@@ -768,6 +818,21 @@ class ABTFarmerApp(tk.Tk):
         # so a malformed address cannot break the next program launch.
         try:
             validate_adb_address(new_cfg["adb_address"])
+        except ValueError as e:
+            self.settings_saved_label.config(text=f"⚠  {e}", fg=WARNING)
+            return
+
+        # Validate package name format before saving — a typo here causes the
+        # farmer to silently fail to detect the game in foreground checks.
+        try:
+            validate_package_name(new_cfg["package_name"])
+        except ValueError as e:
+            self.settings_saved_label.config(text=f"⚠  {e}", fg=WARNING)
+            return
+
+        # Validate activity name format before saving.
+        try:
+            validate_activity_name(new_cfg["activity_name"])
         except ValueError as e:
             self.settings_saved_label.config(text=f"⚠  {e}", fg=WARNING)
             return
