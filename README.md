@@ -8,7 +8,9 @@
 
 A fully automated Python tool for the **Ultimate Time-Skip Glitch** in Angry Birds Transformers. Connects to a rooted emulator via ADB, manipulates the system clock to farm gems and resources infinitely, and safely restores the calendar sync without bricking your game timers.
 
-📍 **Original Method & Exploit Guide:** [Reddit - Ultimate Guide](https://www.reddit.com/r/angrybirdstransform/comments/1ssj9wo/ultimate_guide_time_skip_glitch_in_angry_birds/)
+**Original Method & Exploit Guide:** [Reddit - Ultimate Guide](https://www.reddit.com/r/angrybirdstransform/comments/1ssj9wo/ultimate_guide_time_skip_glitch_in_angry_birds/)
+
+**Youtube script setup guide:** [Youtube - ABTFarmer](https://youtu.be/T9emM1sBUwM)
 
 ---
 
