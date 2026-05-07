@@ -16,7 +16,12 @@ A fully automated Python tool for the **Ultimate Time-Skip Glitch** in Angry Bir
 
 ## ⚠️ Disclaimer
 
-Use at your own risk. This exploit manipulates game mechanics. While the script includes the Time Fix to prevent timer soft-locks, excessive use may result in leaderboard bans or account flags by Exient/Rovio. Always backup your game progress before using automation tools. Educational purposes only.
+This tool, ABTFarmer, is provided for educational and research purposes only. The author assumes no responsibility for any consequences resulting from the use of this software.
+* Account Safety: Using this tool violates the Terms of Service of the game. You acknowledge that your account may be permanently banned by the game developers.
+* No Warranty: This software is provided "as is" without any warranties of any kind, express or implied. The author does not guarantee that the tool will work as intended or that it will be free from bugs.
+* Non-Affiliation: This project is not affiliated with, authorized, maintained, or endorsed by Rovio Entertainment or any of its affiliates. All game assets and trademarks are the property of their respective owners.
+
+By using ABTFarmer, you agree to take full responsibility for any damage to your device or loss of game data.
 
 ---
 
