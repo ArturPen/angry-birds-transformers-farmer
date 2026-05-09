@@ -12,6 +12,7 @@ A fully automated Python tool for the **Ultimate Time-Skip Glitch** in Angry Bir
 
 **YouTube script setup guide:** [YouTube - ABTFarmer](https://youtu.be/T9emM1sBUwM)
 
+**Contact developer:** [Google forms](https://forms.gle/yWmTFcr9sMUAjid26)
 ---
 
 ## ⚠️ Disclaimer
