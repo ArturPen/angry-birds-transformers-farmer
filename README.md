@@ -250,8 +250,8 @@ Some antivirus software (like Windows Defender) may flag the `.exe` version as a
 
 **Is it safe?** Yes. You can check the source code yourself—the app only interacts with ADB and your game. If your antivirus blocks the app, please choose "start anyway", add it to the **exclusions list** or run the script version directly using Python.
 
-
 UPD: virustotal is marking this program probalby for using root in emulator and adb: [virustotal](https://www.virustotal.com/gui/file/0a0a5c29ded4e2b5706936203f0a0702b5a1d7ad0ceb48abc6ccbac574c79231)
+
 ---
 
 *Developed by [ArturPen](https://github.com/ArturPen)*
