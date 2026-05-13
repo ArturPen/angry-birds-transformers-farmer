@@ -5,6 +5,7 @@
 [![ADB](https://img.shields.io/badge/ADB-Android%20Debug%20Bridge-green.svg)](https://developer.android.com/tools/adb)
 [![BlueStacks 5](https://img.shields.io/badge/BlueStacks-5-blue.svg)](https://www.bluestacks.com/)
 [![BSTweaker](https://img.shields.io/badge/Magisk%2027%2FBSTweaker-Root%20Utility-orange.svg)](https://bstweaker.ru/)
+![Downloads](https://img.shields.io/github/downloads/ArturPen/angry-birds-transformers-farmer/total)
 
 A fully automated Python tool for the **Ultimate Time-Skip Glitch** in Angry Birds Transformers. Connects to a rooted emulator via ADB, manipulates the system clock to farm gems and resources infinitely, and safely restores the calendar sync without bricking your game timers.
 
