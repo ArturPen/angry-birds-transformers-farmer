@@ -1,5 +1,4 @@
 import tkinter as tk
-from tkinter import font as tkfont
 import threading
 import queue
 import json
@@ -10,30 +9,40 @@ import time
 import logging
 import logging.handlers
 import webbrowser
-from datetime import datetime
-from driver import (GameDriver, validate_adb_address, validate_coords,
-                    validate_package_name, validate_activity_name,
-                    setup_rotating_log)
 import ctypes
+from datetime import datetime
+from driver import (
+    GameDriver,
+    validate_adb_address,
+    validate_coords,
+    validate_package_name,
+    validate_activity_name,
+    setup_rotating_log,
+    # Import shared constants so DEFAULT_CONFIG and CONFIG_FILE
+    # are defined in a single place (driver.py).
+    CONFIG_FILE,
+    DEFAULT_CONFIG,
+    LOG_FILE,
+)
 
-myappid = 'arturpen.abtfarmer' 
-ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+# ─────────────────────────────────────────────────────────────────────────────
+# Windows taskbar App User Model ID
+# Gives the taskbar button a stable identity for icon grouping.
+# Guarded by a platform check so importing on Linux/Mac does not crash.
+# ─────────────────────────────────────────────────────────────────────────────
+_MYAPPID = "arturpen.abtfarmer"
+if sys.platform == "win32":
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(_MYAPPID)
+    except Exception:
+        pass
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
-APP_VERSION = "2.2.3"
+APP_VERSION = "2.2.4"
 APP_TITLE   = f"ArturPen's ABT Farmer  v{APP_VERSION}"
-CONFIG_FILE = "config.json"
-LOG_FILE    = "farm_log.txt"
 GITHUB_URL  = "https://github.com/ArturPen/angry-birds-transformers-farmer"
-
-DEFAULT_CONFIG = {
-    "adb_address":   "127.0.0.1:5575",
-    "package_name":  "com.rovio.angrybirdstransformers",
-    "activity_name": "com.rovio.angrybirdstransformers.AngryBirdsTransformersActivity",
-    "btn_x": 720,
-    "btn_y": 890,
-}
 
 DONATE_TON  = "UQB4L-ZzhteBgkQEWqejBkDm4ZKjG0leGJwgfXMy5gfknzQR"
 DONATE_USDT = "TEL1XmhnoE6eeudsPEZf3F82bPZMKrrrSd"
@@ -64,24 +73,37 @@ F_SMALL  = ("Segoe UI", 8)
 F_MONO   = ("Consolas", 9)
 F_LABEL  = ("Segoe UI", 9)
 
-def get_resource_path(relative_path):
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Resource path helper
+# ─────────────────────────────────────────────────────────────────────────────
+def get_resource_path(relative_path: str) -> str:
+    """
+    Resolves the path to a bundled asset.
+    When frozen by PyInstaller, assets are extracted to sys._MEIPASS.
+    When running as a plain script, the current working directory is used.
+    """
     try:
-        # PyInstaller creates _MEIPASS
         base_path = sys._MEIPASS
-    except Exception:
+    except AttributeError:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Config helpers
 # ─────────────────────────────────────────────────────────────────────────────
 def load_config() -> dict:
+    """
+    Reads CONFIG_FILE and merges the result with DEFAULT_CONFIG so that
+    any missing keys are filled in automatically.
+    Handles parse errors explicitly so the user knows when the file is
+    unreadable rather than silently falling back to defaults.
+    """
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 return {**DEFAULT_CONFIG, **json.load(f)}
-        # FIX #4 (app): specific exceptions instead of a bare pass so the user
-        # knows the config could not be read rather than silently getting defaults.
         except json.JSONDecodeError as e:
             logging.warning(f"[CONFIG] config.json is malformed, using defaults: {e}")
         except Exception as e:
@@ -90,14 +112,22 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict):
+    """Writes the config dict to CONFIG_FILE as pretty-printed JSON."""
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Queue-based logging handler (farming thread -> GUI)
+# Queue-based logging handler  (farming thread -> GUI main thread)
 # ─────────────────────────────────────────────────────────────────────────────
 class QueueHandler(logging.Handler):
+    """
+    Routes logging records from the worker thread into a Queue that the
+    main thread drains every 80 ms via _poll_queues().
+    tkinter widgets must only be touched from the main thread, so direct
+    widget calls from the worker are not safe.
+    """
+
     def __init__(self, log_queue: queue.Queue):
         super().__init__()
         self.log_queue = log_queue
@@ -107,25 +137,24 @@ class QueueHandler(logging.Handler):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Farming worker — runs in a background thread
+# Farming worker — runs in a background daemon thread
 # ─────────────────────────────────────────────────────────────────────────────
 def farming_worker(mode: int, amount: int, cfg: dict,
                    stop_event: threading.Event,
                    log_q: queue.Queue,
                    ctrl_q: queue.Queue):
     """
-    mode 1 = Farm Gems   (2-day skip, 5 gems/cycle, min 25 gems)
-    mode 2 = Farm Resources (1-day skip, sequential rewards, min 15 days)
+    Public entry point for the daemon thread.  Wraps _farming_worker_inner
+    in a top-level try/except so any unhandled exception sends an ERROR
+    signal to ctrl_q, restoring the UI instead of leaving it stuck in the
+    'farming' state indefinitely.
 
-    ctrl_q messages:
-        "STOP_UNLOCKED"  - stop is now safe to trigger
-        "DONE"           - farming finished normally
-        "STOPPED"        - farming stopped via stop command (fix executed)
-        "ERROR:<msg>"    - fatal error, farming aborted
+    ctrl_q messages produced by the inner worker:
+        "STOP_UNLOCKED"  — stop button is now safe to activate
+        "DONE"           — farming finished normally
+        "STOPPED"        — farming stopped early (Time Fix executed)
+        "ERROR:<msg>"    — fatal error, farming aborted
     """
-    # FIX #5 (app): wrap the entire worker in a top-level try/except so that
-    # any unhandled exception in the thread sends an ERROR signal to ctrl_q,
-    # restoring the UI instead of leaving it stuck in the "farming" state forever.
     try:
         _farming_worker_inner(mode, amount, cfg, stop_event, log_q, ctrl_q)
     except Exception as e:
@@ -137,14 +166,13 @@ def _farming_worker_inner(mode: int, amount: int, cfg: dict,
                           stop_event: threading.Event,
                           log_q: queue.Queue,
                           ctrl_q: queue.Queue):
+    """
+    All farming logic.  Two independent log channels:
+      logger      -> log_q  (Activity Log widget)   key events only
+      file_logger -> farm_log.txt (Extended Log)     full verbose output
+    """
 
-    # ── Setup logging ──────────────────────────────────────────────────────
-    # Two channels:
-    #   logger      -> log_q  (Activity Log in the GUI)   - key events only
-    #   file_logger -> farm_log.txt (Extended Log)        - full verbose output
-    #
-    # FIX (logging): log() now writes to BOTH channels so that everything
-    # visible to the user in the GUI is also present in the text log file.
+    # ── Logging setup ─────────────────────────────────────────────────────
     logger = logging.getLogger("activity")
     logger.setLevel(logging.INFO)
     logger.handlers.clear()
@@ -161,8 +189,6 @@ def _farming_worker_inner(mode: int, amount: int, cfg: dict,
     q_handler.setFormatter(fmt)
     logger.addHandler(q_handler)
 
-    # FIX #8: attach a RotatingFileHandler via setup_rotating_log() so the
-    # log file is automatically rotated instead of growing without limit.
     setup_rotating_log(LOG_FILE)
     try:
         fh = logging.handlers.RotatingFileHandler(
@@ -176,42 +202,46 @@ def _farming_worker_inner(mode: int, amount: int, cfg: dict,
     except Exception:
         pass
 
+    # ── Log helpers ───────────────────────────────────────────────────────
     def log(msg: str):
         """Key event -> Activity Log (GUI) AND farm_log.txt."""
         logger.info(msg)
         file_logger.info(msg)
 
     def vlog(msg: str):
-        """Verbose technical detail -> farm_log.txt only."""
+        """Verbose detail -> farm_log.txt only."""
         file_logger.info(msg)
 
     def logall(msg: str):
-        """Important event -> both channels (kept for compatibility)."""
+        """Important event -> both channels (alias kept for compatibility)."""
         logger.info(msg)
         file_logger.info(msg)
 
-    # Bridge: driver uses the root logger — redirect its output to file_logger.
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
-    root_logger.handlers.clear()
-    root_logger.propagate = False
-
+    # ── BridgeHandler: route GameDriver's root-logger output to file_logger ──
+    # Defined before the filter so isinstance() works correctly, even though
+    # each farming session creates a fresh class.  The name-based filter below
+    # removes only BridgeHandler instances from previous sessions without
+    # touching the RotatingFileHandler added by setup_rotating_log().
     class BridgeHandler(logging.Handler):
         def emit(self, record):
             file_logger.handle(record)
 
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.handlers = [
+        h for h in root_logger.handlers
+        if h.__class__.__name__ != "BridgeHandler"
+    ]
+    root_logger.propagate = False
     root_logger.addHandler(BridgeHandler())
 
-    # ── Connect ────────────────────────────────────────────────────────────
+    # ── Connect ───────────────────────────────────────────────────────────
     try:
         driver = GameDriver(
             adb_address=cfg["adb_address"],
             package_name=cfg["package_name"],
             activity_name=cfg["activity_name"],
         )
-    # FIX #2 (app): ValueError is now raised by validate_adb_address(),
-    # validate_package_name(), and validate_activity_name() in
-    # GameDriver.__init__ — catch it here and report a clean error to the UI.
     except ValueError as e:
         ctrl_q.put(f"ERROR:{e}")
         return
@@ -225,37 +255,32 @@ def _farming_worker_inner(mode: int, amount: int, cfg: dict,
         return
     log("[INFO] Connection established.")
 
-    # ── Pre-flight: verify the game is actually running with the configured
-    #    package name before touching time or clicking anything.
-    #
-    #    This catches the most common silent failure: the user saved a wrong
-    #    package_name in Settings, so is_game_foreground() would always return
-    #    False, causing every cycle to be flagged as a crash immediately.
-    #    We surface that as a clear, actionable error instead.
-
-    # ── (Pre-flight) ────────────────────────────────────────
+    # ── Pre-flight checks ─────────────────────────────────────────────────
     log("[INFO] Verifying package and activity settings...")
 
-    # 1. Package check — is the app actually installed on the emulator?
     if not driver.verify_package_installed():
         logall(f"[ERROR] Package '{cfg['package_name']}' is NOT installed on the emulator.")
         logall("[ERROR] Please check Settings → Package Name.")
         logall("[ERROR] Make sure the game is installed in BlueStacks.")
-        ctrl_q.put(f"ERROR:Package '{cfg['package_name']}' not found on emulator. Check Settings → Package Name.")
+        ctrl_q.put(
+            f"ERROR:Package '{cfg['package_name']}' not found on emulator. "
+            "Check Settings → Package Name."
+        )
         return
 
     log("[INFO] Package found. Verifying activity...")
 
-    # 2. Activity check — does the configured activity exist inside the package?
     if not driver.verify_activity_exists():
         logall(f"[ERROR] Activity '{cfg['activity_name']}' not found in package '{cfg['package_name']}'.")
         logall("[ERROR] Please check Settings → Activity Name.")
-        ctrl_q.put(f"ERROR:Activity '{cfg['activity_name']}' not found in package. Check Settings → Activity Name.")
+        ctrl_q.put(
+            f"ERROR:Activity '{cfg['activity_name']}' not found in package. "
+            "Check Settings → Activity Name."
+        )
         return
 
     log("[INFO] Package and activity verified OK.")
 
-    # ───────────────────────────────────────────────────────────────────────
     log("[INFO] Checking game is in foreground with current package name...")
     if not driver.is_game_foreground():
         logall("[ERROR] Game not detected in foreground.")
@@ -275,7 +300,7 @@ def _farming_worker_inner(mode: int, amount: int, cfg: dict,
     BTN_X = int(cfg["btn_x"])
     BTN_Y = int(cfg["btn_y"])
 
-    # ── Calculate loops ────────────────────────────────────────────────────
+    # ── Calculate loops ───────────────────────────────────────────────────
     if mode == 1:
         loops     = math.ceil(amount / 5)
         mode_name = "Farm Gems (+2 day skip)"
@@ -301,7 +326,7 @@ def _farming_worker_inner(mode: int, amount: int, cfg: dict,
     else:
         log("[INFO] Stop button unlocks after cycle 14.")
 
-    # ── Helper: interruptible sleep ────────────────────────────────────────
+    # ── Helper: interruptible sleep ───────────────────────────────────────
     def isleep(seconds: int) -> bool:
         """Sleeps in 1-second intervals. Returns True if stop was requested."""
         for _ in range(seconds):
@@ -310,17 +335,19 @@ def _farming_worker_inner(mode: int, amount: int, cfg: dict,
             time.sleep(1)
         return False
 
-    # ── Main loop ──────────────────────────────────────────────────────────
+    # ── Main loop ─────────────────────────────────────────────────────────
     stopped_early = False
 
     for i in range(loops):
         cycle = i + 1
 
-        # Stop-flag check (only active after the minimum safe cycle count)
-        if mode == 1 and i >= 5 and stop_event.is_set():
-            stopped_early = True
-            break
-        if mode == 2 and i >= 14 and stop_event.is_set():
+        # Whether the minimum safe cycle count has been reached for this mode.
+        # Computed once per iteration and reused for the stop-flag check,
+        # both sleep calls, and the STOP_UNLOCKED signal.
+        stop_unlocked = (mode == 1 and i >= 5) or (mode == 2 and i >= 14)
+
+        # Honour a stop request only after the minimum cycle count.
+        if stop_unlocked and stop_event.is_set():
             stopped_early = True
             break
 
@@ -328,24 +355,25 @@ def _farming_worker_inner(mode: int, amount: int, cfg: dict,
         vlog(f"── Cycle {cycle}/{loops} ──────────────────────────")
 
         # Step 1: time skip
-        # FIX #1 (app): skip_days() can now raise RuntimeError (driver fix #4).
-        # Catch it here and abort with a clean error message instead of
+        # RuntimeError from skip_days() (e.g. failed device-time read)
+        # is caught here to surface a clean error message rather than
         # letting the thread crash silently.
         try:
-            if mode == 1:
-                driver.skip_days(2)
-            else:
-                driver.skip_days(1)
+            driver.skip_days(2 if mode == 1 else 1)
         except RuntimeError as e:
             logall(f"[ERROR] Failed to read device time: {e}")
             ctrl_q.put(f"ERROR:{e}")
             return
 
-        # Step 2: wait for game engine
-        interrupted = isleep(5) if (mode == 1 and i >= 5) or (mode == 2 and i >= 14) else not not time.sleep(5)
-        if interrupted:
-            stopped_early = True
-            break
+        # Step 2: wait for the game engine to register the time change.
+        # Use interruptible sleep once stop is unlocked so a stop request
+        # is noticed immediately rather than after the full delay.
+        if stop_unlocked:
+            if isleep(5):
+                stopped_early = True
+                break
+        else:
+            time.sleep(5)
 
         # Step 2b: freeze / crash check
         if not driver.is_game_foreground():
@@ -356,8 +384,7 @@ def _farming_worker_inner(mode: int, amount: int, cfg: dict,
             return
 
         # Step 3: tap claim button
-        # FIX #9 (app): click() can raise ValueError if coordinates are out of
-        # range (driver fix #9). Catch and surface it cleanly.
+        # ValueError from click() (coordinates out of range) is caught here.
         try:
             driver.click(BTN_X, BTN_Y)
         except ValueError as e:
@@ -366,10 +393,12 @@ def _farming_worker_inner(mode: int, amount: int, cfg: dict,
             return
 
         # Step 4: animation grace period
-        interrupted = isleep(2) if (mode == 1 and i >= 5) or (mode == 2 and i >= 14) else not not time.sleep(2)
-        if interrupted:
-            stopped_early = True
-            break
+        if stop_unlocked:
+            if isleep(2):
+                stopped_early = True
+                break
+        else:
+            time.sleep(2)
 
         # Step 4b: freeze / crash check
         if not driver.is_game_foreground():
@@ -379,17 +408,19 @@ def _farming_worker_inner(mode: int, amount: int, cfg: dict,
             ctrl_q.put("ERROR:Game froze or crashed during cycle. Check the emulator screen.")
             return
 
-        # Unlock stop after the minimum number of safe cycles
-        if mode == 1 and cycle == 5:
+        # Unlock stop after the minimum number of safe cycles.
+        if (mode == 1 and cycle == 5) or (mode == 2 and cycle == 14):
             ctrl_q.put("STOP_UNLOCKED")
-            log("[INFO] Cycle 5 complete — Stop is now active.")
+            log(f"[INFO] Cycle {cycle} complete — Stop is now active.")
 
-        if mode == 2 and cycle == 14:
-            ctrl_q.put("STOP_UNLOCKED")
-            log("[INFO] Cycle 14 complete — Stop is now active.")
-
-    # ── Finalization ───────────────────────────────────────────────────────
+    # ── Time Fix ──────────────────────────────────────────────────────────
     def run_fix():
+        """
+        Three-step Time Fix: stop game -> revert clock -> relaunch.
+        Shared by the normal-completion path and the early-stop path.
+        Warns the user if the game fails to launch so they can intervene
+        manually rather than wondering why the calendar fix didn't apply.
+        """
         logall("[FIX] Running Time Fix procedure...")
         vlog("[FIX] Force-stopping game...")
         driver.stop_game()
@@ -398,8 +429,13 @@ def _farming_worker_inner(mode: int, amount: int, cfg: dict,
         driver.apply_fix()
         time.sleep(2)
         vlog("[FIX] Launching game...")
-        driver.start_game()
+        if not driver.start_game():
+            logall(
+                "[WARNING] Game did not launch during Time Fix. "
+                "Please start it manually and wait for 00:00 on the map screen."
+            )
 
+    # ── Finalization ──────────────────────────────────────────────────────
     if stopped_early:
         logall("[STOP] Stop received. Executing Time Fix before exit...")
         run_fix()
@@ -426,6 +462,11 @@ def _farming_worker_inner(mode: int, amount: int, cfg: dict,
 # ─────────────────────────────────────────────────────────────────────────────
 def make_btn(parent, text, command, bg=ACCENT, fg=TEXT,
              font=F_BOLD, pady=8, padx=18, width=None, cursor="hand2"):
+    """
+    Factory for the flat, borderless buttons used throughout the UI.
+    Centralises all common style options; call sites only override what differs.
+    Returns the Button without packing it.
+    """
     b = tk.Button(
         parent, text=text, command=command,
         bg=bg, fg=fg, font=font,
@@ -450,20 +491,28 @@ class ABTFarmerApp(tk.Tk):
         self.config_data  = load_config()
         self.log_q:  queue.Queue = queue.Queue()
         self.ctrl_q: queue.Queue = queue.Queue()
-        self.stop_event = threading.Event()
-        self.farming    = False
-        self.mode_var   = tk.IntVar(value=1)  # 1 = Gems, 2 = Resources
-        self._stop_btn_active = False          # tracks live stop state
+        self.stop_event   = threading.Event()
+        self.farming      = False
+        self.mode_var     = tk.IntVar(value=1)   # 1 = Gems, 2 = Resources
+        self._stop_btn_active = False
+
+        # Farming session state — initialised here so attribute lookups are
+        # always valid even before the first session starts.
+        self._total_cycles  = 0
+        self._done_cycles   = 0
+        self._current_mode  = 1
 
         self._setup_window()
         self._build_main_frame()
         self._build_settings_frame()
         self._build_donate_frame()
         self._build_extlog_frame()
+
         self._extlog_after    = None
         self._extlog_pos      = 0
         self._countdown_after = None
         self._countdown_end   = 0
+
         self._show_frame(self.main_frame)
 
     # ── Window setup ──────────────────────────────────────────────────────────
@@ -473,27 +522,20 @@ class ABTFarmerApp(tk.Tk):
         self.minsize(540, 660)
         self.configure(bg=BG)
 
-        # Icon setup
         icon_path = get_resource_path("assets/ABTFarmer.ico")
         if os.path.exists(icon_path):
             try:
                 self.iconbitmap(icon_path)
-
                 try:
                     from PIL import Image, ImageTk
-                    # Loading ICO from Pillow
-                    pil_image = Image.open(icon_path)
-
+                    pil_image    = Image.open(icon_path)
                     tk_icon_image = ImageTk.PhotoImage(pil_image)
                     self.iconphoto(True, tk_icon_image)
-
-                    self._taskbar_icon_ref = tk_icon_image 
                 except ImportError:
-                    
                     tk_icon_image = tk.PhotoImage(file=icon_path)
                     self.iconphoto(True, tk_icon_image)
-                    self._taskbar_icon_ref = tk_icon_image
-
+                # Keep a reference to prevent garbage collection.
+                self._taskbar_icon_ref = tk_icon_image
             except Exception:
                 pass
 
@@ -505,6 +547,8 @@ class ABTFarmerApp(tk.Tk):
 
     # ── Frame switcher ────────────────────────────────────────────────────────
     def _show_frame(self, frame: tk.Frame):
+        """Hides all frames and shows the requested one.
+        Starts or stops the Extended Log tail depending on which frame is shown."""
         for f in (self.main_frame, self.settings_frame,
                   self.donate_frame, self.extlog_frame):
             f.place_forget()
@@ -589,7 +633,6 @@ class ABTFarmerApp(tk.Tk):
         )
         self.countdown_label.pack(side="left", padx=(16, 0))
 
-        # Validation message (hidden until needed)
         self.val_label = tk.Label(
             inp_frame, text="", font=F_SMALL,
             bg=BG, fg=WARNING)
@@ -612,15 +655,14 @@ class ABTFarmerApp(tk.Tk):
         )
         self.action_btn.pack(fill="x")
 
-        # Mode-2 hint shown under the stop button
         self.stop_hint = tk.Label(
             btn_container, text="",
             font=F_SMALL, bg=BG, fg=SUBTEXT)
         self.stop_hint.pack(pady=(4, 0))
 
-        # ── Bottom bar ────────────────────────────────────────────────────
-        # NOTE: must be packed BEFORE the expanding log area so pack(side="bottom")
-        # claims its space correctly in tkinter's layout engine.
+        # ── Bottom navigation bar ─────────────────────────────────────────
+        # Must be packed before the log area so pack(side="bottom") claims
+        # its space correctly in tkinter's layout engine.
         bottom = tk.Frame(f, bg=SURFACE, height=44)
         bottom.pack(fill="x", side="bottom")
         bottom.pack_propagate(False)
@@ -637,7 +679,7 @@ class ABTFarmerApp(tk.Tk):
                  bg=SURFACE, fg=SUBTEXT, font=F_LABEL,
                  pady=4, padx=14).pack(side="right", padx=8, pady=8)
 
-        # ── Log area ──────────────────────────────────────────────────────
+        # ── Activity Log ──────────────────────────────────────────────────
         log_outer = tk.Frame(f, bg=SURFACE, bd=0)
         log_outer.pack(fill="both", expand=True, padx=24, pady=(14, 8))
 
@@ -677,7 +719,6 @@ class ABTFarmerApp(tk.Tk):
         f = tk.Frame(self, bg=BG)
         self.settings_frame = f
 
-        # ── Fixed header (not scrolled) ───────────────────────────────────
         hdr = tk.Frame(f, bg=SURFACE, height=64)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
@@ -689,8 +730,6 @@ class ABTFarmerApp(tk.Tk):
         tk.Label(hdr, text="Settings", font=F_TITLE,
                  bg=SURFACE, fg=TEXT).pack(side="left", pady=16)
 
-        # ── Scrollable content area ───────────────────────────────────────
-        # Canvas + inner Frame is the standard tkinter scrollable pattern.
         scroll_container = tk.Frame(f, bg=BG)
         scroll_container.pack(fill="both", expand=True)
 
@@ -703,29 +742,23 @@ class ABTFarmerApp(tk.Tk):
         vsb.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
 
-        # Inner frame lives inside the canvas
         body = tk.Frame(canvas, bg=BG)
         body_window = canvas.create_window((0, 0), window=body, anchor="nw")
 
-        # Keep inner frame width in sync with canvas width
         def _on_canvas_resize(event):
             canvas.itemconfig(body_window, width=event.width)
         canvas.bind("<Configure>", _on_canvas_resize)
 
-        # Update scroll region when body changes size
         def _on_body_resize(event):
             canvas.configure(scrollregion=canvas.bbox("all"))
         body.bind("<Configure>", _on_body_resize)
 
-        # Mouse-wheel scrolling
         def _on_mousewheel(event):
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
-        # Unbind when leaving this frame so it doesn't affect other frames
         f.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _on_mousewheel))
         f.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
 
-        # ── Fields (inside scrollable body) ──────────────────────────────
         inner = tk.Frame(body, bg=BG)
         inner.pack(fill="x", padx=28, pady=16)
 
@@ -743,7 +776,6 @@ class ABTFarmerApp(tk.Tk):
         for key, label, hint in fields:
             self._add_settings_field(inner, key, label, hint)
 
-        # X / Y coordinates
         tk.Label(inner, text="Claim Button Coordinates",
                  font=F_BOLD, bg=BG, fg=TEXT
                  ).pack(anchor="w", pady=(14, 2))
@@ -766,10 +798,8 @@ class ABTFarmerApp(tk.Tk):
                          insertbackground=TEXT, relief="flat", bd=0)
             e.pack(ipady=6, ipadx=6)
 
-        # ── Separator ─────────────────────────────────────────────────────
         tk.Frame(inner, bg=BORDER, height=1).pack(fill="x", pady=18)
 
-        # ── GitHub link ───────────────────────────────────────────────────
         gh_row = tk.Frame(inner, bg=BG)
         gh_row.pack(anchor="w")
         tk.Label(gh_row, text="🔗  ", font=F_BODY, bg=BG, fg=TEXT).pack(side="left")
@@ -779,7 +809,6 @@ class ABTFarmerApp(tk.Tk):
         gh_link.pack(side="left")
         gh_link.bind("<Button-1>", lambda e: webbrowser.open(GITHUB_URL))
 
-        # ── Save button ───────────────────────────────────────────────────
         save_btn = make_btn(inner, "💾  Save Settings", self._save_settings,
                             bg=ACCENT, fg=TEXT, font=F_BOLD, pady=10, padx=0)
         save_btn.pack(fill="x", pady=(20, 0))
@@ -789,6 +818,7 @@ class ABTFarmerApp(tk.Tk):
         self.settings_saved_label.pack(pady=(6, 16))
 
     def _add_settings_field(self, parent, key, label, hint):
+        """Renders one labelled entry with a hint line into the Settings body."""
         tk.Label(parent, text=label, font=F_BOLD, bg=BG, fg=TEXT
                  ).pack(anchor="w", pady=(12, 2))
         tk.Label(parent, text=hint, font=F_SMALL, bg=BG, fg=SUBTEXT,
@@ -801,6 +831,11 @@ class ABTFarmerApp(tk.Tk):
         e.pack(fill="x", ipady=7, ipadx=8, pady=(4, 0))
 
     def _save_settings(self):
+        """
+        Reads all setting vars, validates every field, and writes to config.json.
+        Validation errors are shown inline so the user gets immediate feedback
+        instead of a crash at farming start.
+        """
         new_cfg = {}
         for key, var in self._settings_vars.items():
             val = var.get().strip()
@@ -809,38 +844,18 @@ class ABTFarmerApp(tk.Tk):
                     new_cfg[key] = int(val)
                 except ValueError:
                     self.settings_saved_label.config(
-                        text=f"⚠ {key} must be an integer.", fg=WARNING)
+                        text=f"⚠  {key} must be an integer.", fg=WARNING)
                     return
             else:
                 new_cfg[key] = val
 
-        # FIX #3 (app): validate the ADB address before writing to config.json
-        # so a malformed address cannot break the next program launch.
+        # Validate all string fields before writing to disk.
         try:
             validate_adb_address(new_cfg["adb_address"])
-        except ValueError as e:
-            self.settings_saved_label.config(text=f"⚠  {e}", fg=WARNING)
-            return
-
-        # Validate package name format before saving — a typo here causes the
-        # farmer to silently fail to detect the game in foreground checks.
-        try:
             validate_package_name(new_cfg["package_name"])
-        except ValueError as e:
-            self.settings_saved_label.config(text=f"⚠  {e}", fg=WARNING)
-            return
-
-        # Validate activity name format before saving.
-        try:
             validate_activity_name(new_cfg["activity_name"])
-        except ValueError as e:
-            self.settings_saved_label.config(text=f"⚠  {e}", fg=WARNING)
-            return
-
-        # FIX #9 (app): validate coordinates before saving.
-        try:
             validate_coords(int(new_cfg["btn_x"]), int(new_cfg["btn_y"]))
-        except ValueError as e:
+        except (ValueError, KeyError) as e:
             self.settings_saved_label.config(text=f"⚠  {e}", fg=WARNING)
             return
 
@@ -856,7 +871,6 @@ class ABTFarmerApp(tk.Tk):
         f = tk.Frame(self, bg=BG)
         self.extlog_frame = f
 
-        # ── Header ────────────────────────────────────────────────────────
         hdr = tk.Frame(f, bg=SURFACE, height=64)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
@@ -872,7 +886,6 @@ class ABTFarmerApp(tk.Tk):
                  bg=SURFACE, fg=SUBTEXT, font=F_SMALL,
                  pady=4, padx=10).pack(side="right", padx=12, pady=16)
 
-        # ── Log area (same style as Activity Log) ─────────────────────────
         log_outer = tk.Frame(f, bg=SURFACE, bd=0)
         log_outer.pack(fill="both", expand=True, padx=24, pady=(14, 8))
 
@@ -910,6 +923,7 @@ class ABTFarmerApp(tk.Tk):
         self._show_frame(self.extlog_frame)
 
     def _extlog_tag(self, line: str) -> str:
+        """Maps a log line to a colour tag based on keyword matching."""
         if "[ERROR]" in line or "Error" in line:
             return "error"
         if "[SUCCESS]" in line or "[FIX]" in line or "[+]" in line:
@@ -925,6 +939,7 @@ class ABTFarmerApp(tk.Tk):
         return "info"
 
     def _load_extlog_full(self):
+        """Clears the widget and loads the entire current content of LOG_FILE."""
         self.extlog_text.config(state="normal")
         self.extlog_text.delete("1.0", "end")
         self._extlog_pos = 0
@@ -939,19 +954,33 @@ class ABTFarmerApp(tk.Tk):
             except Exception:
                 pass
         else:
-            self.extlog_text.insert("end",
+            self.extlog_text.insert(
+                "end",
                 "No farm_log.txt found yet.\nStart a farm session to generate logs.\n",
-                "dim")
+                "dim",
+            )
         self.extlog_text.config(state="disabled")
 
     def _start_extlog_tail(self):
+        """Called when the Extended Log frame becomes visible."""
         self._load_extlog_full()
         self._tail_extlog()
 
     def _tail_extlog(self):
+        """
+        Reads bytes appended to LOG_FILE since the last poll and inserts them.
+        Detects log rotation by comparing the current file size against the
+        stored position: if the file is shorter than _extlog_pos, the handler
+        has rotated it and we reset to the beginning of the new file.
+        Re-schedules itself after 500 ms.
+        """
         if os.path.exists(LOG_FILE):
             try:
                 with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as fh:
+                    # Detect rotation: file became shorter than our last position.
+                    fh.seek(0, 2)
+                    if fh.tell() < self._extlog_pos:
+                        self._extlog_pos = 0
                     fh.seek(self._extlog_pos)
                     new_data = fh.read()
                     self._extlog_pos = fh.tell()
@@ -966,16 +995,19 @@ class ABTFarmerApp(tk.Tk):
         self._extlog_after = self.after(500, self._tail_extlog)
 
     def _stop_extlog_tail(self):
+        """Cancels the pending tail callback when leaving the Extended Log frame."""
         if self._extlog_after is not None:
             self.after_cancel(self._extlog_after)
             self._extlog_after = None
 
     def _clear_extlog(self):
+        """Clears the widget and truncates LOG_FILE to zero bytes."""
         self.extlog_text.config(state="normal")
         self.extlog_text.delete("1.0", "end")
         self.extlog_text.config(state="disabled")
         try:
-            open(LOG_FILE, "w").close()
+            with open(LOG_FILE, "w", encoding="utf-8"):
+                pass
             self._extlog_pos = 0
         except Exception:
             pass
@@ -987,7 +1019,6 @@ class ABTFarmerApp(tk.Tk):
         f = tk.Frame(self, bg=BG)
         self.donate_frame = f
 
-        # ── Header ────────────────────────────────────────────────────────
         hdr = tk.Frame(f, bg=SURFACE, height=64)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
@@ -999,7 +1030,6 @@ class ABTFarmerApp(tk.Tk):
         tk.Label(hdr, text="Support the Project", font=F_TITLE,
                  bg=SURFACE, fg=TEXT).pack(side="left", pady=16)
 
-        # ── Body ──────────────────────────────────────────────────────────
         body = tk.Frame(f, bg=BG)
         body.pack(fill="both", expand=True, padx=28, pady=20)
 
@@ -1025,6 +1055,7 @@ class ABTFarmerApp(tk.Tk):
         gh_link.bind("<Button-1>", lambda e: webbrowser.open(GITHUB_URL))
 
     def _add_donate_row(self, parent, title, address):
+        """Renders one donation row: title, address label, and Copy button."""
         grp = tk.Frame(parent, bg=SURFACE, pady=12, padx=14)
         grp.pack(fill="x", pady=(0, 12))
 
@@ -1109,8 +1140,8 @@ class ABTFarmerApp(tk.Tk):
                 fg=WARNING)
             return
 
-        # FIX #2 (app): validate coordinates before starting the thread so
-        # a clear error is shown in the GUI rather than failing inside the worker.
+        # Validate coordinates here (in the UI thread) so a misconfigured
+        # value surfaces as a clear inline error rather than a worker crash.
         try:
             validate_coords(
                 int(self.config_data["btn_x"]),
@@ -1127,7 +1158,10 @@ class ABTFarmerApp(tk.Tk):
         self._start_farming(mode, amount)
 
     def _start_farming(self, mode: int, amount: int):
-        self.farming = True
+        self.farming          = True
+        self._current_mode    = mode
+        self._total_cycles    = math.ceil(amount / 5) if mode == 1 else amount
+        self._done_cycles     = 0
         self.stop_event.clear()
         self._stop_btn_active = False
 
@@ -1135,18 +1169,12 @@ class ABTFarmerApp(tk.Tk):
         self.log_text.delete("1.0", "end")
         self.log_text.config(state="disabled")
 
-        self.action_btn.config(
-            text="⏹  STOP",
-            command=self._on_stop,
-        )
+        self.action_btn.config(text="⏹  STOP", command=self._on_stop)
         self._update_stop_btn_state()
 
-        if mode == 2:
-            self.stop_hint.config(
-                text="Stop will unlock after cycle 14", fg=SUBTEXT)
-        else:
-            self.stop_hint.config(
-                text="Stop will unlock after cycle 5", fg=SUBTEXT)
+        self.stop_hint.config(
+            text=f"Stop will unlock after cycle {'5' if mode == 1 else '14'}",
+            fg=SUBTEXT)
 
         self.rb_gems.config(state="disabled")
         self.rb_res.config(state="disabled")
@@ -1160,9 +1188,6 @@ class ABTFarmerApp(tk.Tk):
         )
         t.start()
 
-        self._total_cycles  = math.ceil(amount / 5) if mode == 1 else amount
-        self._done_cycles   = 0
-        self._current_mode  = mode
         total_sec           = self._total_cycles * 8
         self._countdown_end = time.time() + total_sec
         self._tick_countdown()
@@ -1191,8 +1216,8 @@ class ABTFarmerApp(tk.Tk):
             )
 
     def _on_farming_ended(self):
-        """Resets the UI after farming finishes (normally or via stop)."""
-        self.farming = False
+        """Resets the UI to idle after farming finishes (normally or via stop)."""
+        self.farming          = False
         self._stop_btn_active = False
 
         if self._countdown_after is not None:
@@ -1234,28 +1259,38 @@ class ABTFarmerApp(tk.Tk):
     # ─────────────────────────────────────────────────────────────────────────
     # Queue polling
     # ─────────────────────────────────────────────────────────────────────────
-    def _poll_queues(self):
-        # Drain the log queue
+    def _drain_log_q(self):
+        """Flushes all pending messages from log_q into the Activity Log widget."""
         try:
             while True:
-                msg = self.log_q.get_nowait()
-                self._append_log(msg)
+                self._append_log(self.log_q.get_nowait())
         except queue.Empty:
             pass
 
-        # Drain the control queue
+    def _poll_queues(self):
+        """
+        Runs on the main thread every 80 ms while farming is active.
+        Drains log_q into the Activity Log, then processes ctrl_q signals.
+        On a terminal signal (DONE / STOPPED / ERROR) the log queue is fully
+        drained first so the last messages from the worker are never lost.
+        """
+        self._drain_log_q()
+
         try:
             while True:
                 cmd = self.ctrl_q.get_nowait()
                 if cmd == "STOP_UNLOCKED":
                     self._stop_btn_active = True
                     self._update_stop_btn_state()
-                    self.stop_hint.config(
-                        text="Stop is now active", fg=SUCCESS)
+                    self.stop_hint.config(text="Stop is now active", fg=SUCCESS)
                 elif cmd in ("DONE", "STOPPED"):
+                    # Drain once more to capture any messages sent after the
+                    # terminal signal was queued.
+                    self._drain_log_q()
                     self._on_farming_ended()
                     return
                 elif cmd.startswith("ERROR:"):
+                    self._drain_log_q()
                     self._append_log(f"[ERROR] {cmd[6:]}", tag="error")
                     self._on_farming_ended()
                     return
@@ -1269,6 +1304,10 @@ class ABTFarmerApp(tk.Tk):
     # Log helpers
     # ─────────────────────────────────────────────────────────────────────────
     def _append_log(self, msg: str, tag: str = None):
+        """
+        Inserts a formatted log line into the Activity Log widget.
+        Tag is inferred from message keywords if not provided explicitly.
+        """
         if tag is None:
             if "[ERROR]" in msg or "Error" in msg:
                 tag = "error"
@@ -1291,15 +1330,16 @@ class ABTFarmerApp(tk.Tk):
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    try:
-        import ctypes
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-    except Exception:
+    # Enable native DPI rendering on Windows high-resolution displays.
+    # Must be called before tk.Tk() is instantiated.
+    if sys.platform == "win32":
         try:
-            import ctypes
-            ctypes.windll.user32.SetProcessDPIAware()
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
         except Exception:
-            pass
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
 
     app = ABTFarmerApp()
     app.mainloop()
