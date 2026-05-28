@@ -4,7 +4,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![ADB](https://img.shields.io/badge/ADB-Android%20Debug%20Bridge-green.svg)](https://developer.android.com/tools/adb)
 [![BlueStacks 5](https://img.shields.io/badge/BlueStacks-5-blue.svg)](https://www.bluestacks.com/)
-[![BSTweaker](https://img.shields.io/badge/Magisk%2027%2FBSTweaker-Root%20Utility-orange.svg)](https://bstweaker.ru/)
 ![Downloads](https://img.shields.io/github/downloads/ArturPen/angry-birds-transformers-farmer/total)
 
 A fully automated Python tool for the **Ultimate Time-Skip Glitch** in Angry Birds Transformers. Connects to a rooted emulator via ADB, manipulates the system clock to farm gems and resources infinitely, and safely restores the calendar sync without bricking your game timers.
@@ -12,6 +11,7 @@ A fully automated Python tool for the **Ultimate Time-Skip Glitch** in Angry Bir
 **Original Method & Exploit Guide:** [Reddit - Ultimate Guide](https://www.reddit.com/r/angrybirdstransform/comments/1ssj9wo/ultimate_guide_time_skip_glitch_in_angry_birds/)
 
 **YouTube script setup guide:** [YouTube - ABTFarmer](https://youtu.be/T9emM1sBUwM)
+**YouTube root guide:** [YouTube - Bluestacks 5 root](https://youtu.be/ba7RhQqyhPk?si=Fgh32wgzkYv9ACLJ)
 
 **Contact developer:** [Google forms](https://forms.gle/yWmTFcr9sMUAjid26)
 
@@ -118,19 +118,19 @@ To change the system date, Android **requires Root access**. The tool will not w
 |----------|---------|
 | **[Python 3.8+](https://www.python.org/)** | No external libraries required; only built-in modules are used (`tkinter`, `threading`, `json`, `logging`, etc.) |
 | **[BlueStacks 5](https://www.bluestacks.com/)** | Recommended emulator |
-| **[Magisk 27/BSTweaker](https://bstweaker.ru/)** | Required utility to unlock Root access in BlueStacks |
+| **[Magisk 27](https://youtu.be/ba7RhQqyhPk?si=Fgh32wgzkYv9ACLJ)** | Required utility to unlock Root access in BlueStacks |
 | **[ADB files](https://developer.android.com/tools/adb)** | `adb.exe`, `AdbWinApi.dll`, `AdbWinUsbApi.dll` must be placed in the same folder as `app.py` and `driver.py` |
 ### Download ABTFarmer.exe from [Releases](https://github.com/ArturPen/ab-transformers-time-skip/releases)
 | Software | Purpose |
 |----------|---------|
 | **[ABTFarmer.exe](https://github.com/ArturPen/ab-transformers-time-skip/releases)** | Compiled exe  |
 | **[BlueStacks 5](https://www.bluestacks.com/)** | Recommended emulator |
-| **[Magisk 27/BSTweaker](https://bstweaker.ru/)** | Required utility to unlock Root access in BlueStacks |
+| **[Magisk 27](https://youtu.be/ba7RhQqyhPk?si=Fgh32wgzkYv9ACLJ)** | Required utility to unlock Root access in BlueStacks |
 
 ---
 ### Rooting & ADB Configuration
 
-1. Open **BSTweaker**, connect to your BlueStacks instance, and follow the instructions to unlock and patch Root access.
+1. Open **[YouTube rooting guide](https://youtu.be/ba7RhQqyhPk?si=Fgh32wgzkYv9ACLJ)**, and follow the instructions to unlock and patch Root access.
 2. In BlueStacks, go to **Settings → Advanced** (or Developer Options).
 3. Toggle on **Android Debug Bridge (ADB)**.
 4. Note your ADB port — usually `127.0.0.1:5575` or `127.0.0.1:5555`.
