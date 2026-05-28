@@ -11,6 +11,7 @@ A fully automated Python tool for the **Ultimate Time-Skip Glitch** in Angry Bir
 **Original Method & Exploit Guide:** [Reddit - Ultimate Guide](https://www.reddit.com/r/angrybirdstransform/comments/1ssj9wo/ultimate_guide_time_skip_glitch_in_angry_birds/)
 
 **YouTube script setup guide:** [YouTube - ABTFarmer](https://youtu.be/T9emM1sBUwM)
+
 **YouTube root guide:** [YouTube - Bluestacks 5 root](https://youtu.be/ba7RhQqyhPk?si=Fgh32wgzkYv9ACLJ)
 
 **Contact developer:** [Google forms](https://forms.gle/yWmTFcr9sMUAjid26)
