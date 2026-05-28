@@ -117,6 +117,7 @@ To change the system date, Android **requires Root access**. The tool will not w
 ### Open source
 | Software | Purpose |
 |----------|---------|
+| **[Source code](https://github.com/ArturPen/angry-birds-transformers-farmer/)** | Download source code of ABTFarmer |
 | **[Python 3.8+](https://www.python.org/)** | No external libraries required; only built-in modules are used (`tkinter`, `threading`, `json`, `logging`, etc.) |
 | **[BlueStacks 5](https://www.bluestacks.com/)** | Recommended emulator |
 | **[Magisk 27](https://youtu.be/ba7RhQqyhPk?si=Fgh32wgzkYv9ACLJ)** | Required utility to unlock Root access in BlueStacks |
